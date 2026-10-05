@@ -35,10 +35,20 @@
   }
 
   function collectAvatarBackgrounds(doc){
+    // COCORORIA는 아바타 이미지를 .avatar-image-N 클래스의
+    // background-image(data:image/png;base64,...)로 HTML 안에 직접 넣습니다.
+    // 원본 CSS를 그대로 읽어서 미리보기에서도 반드시 유지합니다.
     $$('style',doc).forEach(st=>{
       const css=st.textContent||'';
-      const re=/\.((?:avatar-image|avatar)-[^\s{]+)\s*\{[^}]*background-image\s*:\s*url\(\"?([^\")]+)\"?\)\s*;?/g;
-      let m; while((m=re.exec(css))) state.avatarBackgrounds.set(m[1], `url(\"${m[2]}\")`);
+      const re=/\.([A-Za-z0-9_-]+)\s*\{([\s\S]*?)\}/g;
+      let m;
+      while((m=re.exec(css))){
+        const className=m[1];
+        if(!className.startsWith('avatar-image-') && !className.startsWith('avatar-')) continue;
+        const block=m[2];
+        const bg=block.match(/background-image\s*:\s*(url\([\s\S]*?\))/i);
+        if(bg) state.avatarBackgrounds.set(className,bg[1]);
+      }
     });
   }
 
@@ -103,32 +113,26 @@
 
   function render(){
     if(!state.doc)return;
-    renderTabs();
     const preview=$('#preview'); preview.innerHTML='';
     const root=state.doc.querySelector('.message-list');
     const articles=$$('.message',root);
-    let currentTab=null, prevSig=null, count=0;
+    let prevSig=null, prevChannel=null, count=0;
     articles.forEach(m=>{
-      const channel=(m.dataset.channel||'main').trim()||'main'; const tab=state.tabs.get(channel);
+      const channel=(m.dataset.channel||'main').trim()||'main';
+      const tab=state.tabs.get(channel);
       if(!tab || (state.hideDeletedTabs&&tab.deleted)) return;
-      if(currentTab!==channel){currentTab=channel;prevSig=null;}
       const out=makeMessage(m); if(!out)return;
-      const isNarr=out.classList.contains('narration-row')||out.classList.contains('system-row');
+      out.style.setProperty('--channel-bg', tab.color);
+      out.style.backgroundColor=tab.color;
       const sig=out.dataset.signature||'';
-      if(state.joinSameExpression && prevSig && sig && sig===prevSig){out.classList.add('continuation');}
-      else if(isNarr && prevSig && sig===prevSig){out.classList.add('continuation');}
-      prevSig=sig; count++;
-      let holder=preview.querySelector(`[data-tab-holder="${CSS.escape(channel)}"]`);
-      if(!holder){holder=document.createElement('div');holder.className='message-list tab-holder';holder.dataset.tabHolder=channel;holder.hidden=state.activeTab!==channel;preview.appendChild(holder);}
-      holder.appendChild(out);
+      if(state.joinSameExpression && prevChannel===channel && prevSig && sig && sig===prevSig){
+        out.classList.add('continuation');
+      }
+      prevSig=sig; prevChannel=channel; count++;
+      preview.appendChild(out);
     });
     $('#stats').textContent=` · ${count}개 메시지`;
-    if(!preview.querySelector('.tab-holder')) preview.innerHTML='<div class="empty-state"><h2>표시할 메시지가 없습니다.</h2></div>';
-  }
-
-  function renderTabs(){
-    const nav=$('#previewTabs');nav.innerHTML='';
-    for(const [id,t] of state.tabs){if(state.hideDeletedTabs&&t.deleted)continue;const b=document.createElement('button');b.className='preview-tab';b.textContent=t.name;b.style.borderBottomColor=t.color;if(state.activeTab===id)b.classList.add('active');b.addEventListener('click',()=>{state.activeTab=id;renderTabs();render();});nav.appendChild(b);}
+    if(!preview.children.length) preview.innerHTML='<div class="empty-state"><h2>표시할 메시지가 없습니다.</h2></div>';
   }
 
   function makeMessage(m){
@@ -160,14 +164,29 @@
     const sp=$('.speaker',m);if(sp){const s=document.createElement('span');s.className='message-speaker';s.textContent=sp.textContent;s.style.color=getSpeakerColor(sp);meta.appendChild(s);}main.appendChild(meta);const text=$('.message-text',m);if(text)main.appendChild(cloneText(text));r.appendChild(main);r.dataset.signature=getAvatar(m)||'normal';return r;
   }
   function cloneText(el){const d=document.createElement('div');d.className='message-text';d.innerHTML=el.innerHTML;return d;}
-  function setAvatarBackground(el,src){if(!src){el.style.backgroundImage='none';return;}if(src.startsWith('data:')||src.startsWith('http')||src.startsWith('url(')){el.style.backgroundImage=src.startsWith('url(')?src:`url("${src}")`;return;}const av=state.doc&&state.doc.querySelector('.'+CSS.escape(src));if(av){const cs=state.doc.defaultView?state.doc.defaultView.getComputedStyle(av):null;const bg=cs&&cs.backgroundImage&&cs.backgroundImage!=='none'?cs.backgroundImage:'';if(bg){el.style.backgroundImage=bg;return;}}el.style.backgroundImage='none';}
+  function setAvatarBackground(el,src){
+    if(!src){el.style.backgroundImage='none';return;}
+    if(src.startsWith('data:')||src.startsWith('http')||src.startsWith('url(')){
+      el.style.backgroundImage=src.startsWith('url(')?src:`url("${src}")`;
+      return;
+    }
+    const bg=state.avatarBackgrounds.get(src);
+    if(bg){el.style.backgroundImage=bg;return;}
+    const av=state.doc&&state.doc.querySelector('.'+CSS.escape(src));
+    if(av){
+      const bg2=av.style.backgroundImage;
+      if(bg2 && bg2!=='none'){el.style.backgroundImage=bg2;return;}
+    }
+    el.style.backgroundImage='none';
+  }
 
   function buildOutput(){
     const doc=state.doc.cloneNode(true);
     const root=doc.querySelector('.message-list'); if(!root)return doc;
     const style=doc.createElement('style');style.textContent=`
       .cr-hidden-tab{display:none!important}
-      .cr-narration,.cr-system{display:block!important;width:100%!important;box-sizing:border-box!important;background:#f5f5f5!important;margin:0!important;padding:14px 24px!important;border:0!important;text-align:center!important}
+      .cr-channel-bg{background-color:var(--cr-channel-bg)!important}
+      .cr-narration,.cr-system{display:block!important;width:100%!important;box-sizing:border-box!important;background:var(--cr-channel-bg,#f5f5f5)!important;margin:0!important;padding:14px 24px!important;border:0!important;text-align:center!important}
       .cr-narration .message-header,.cr-narration .avatar,.cr-narration .avatar-spacer,.cr-system .message-header{display:none!important}
       .cr-narration .message-content,.cr-narration .message-text,.cr-system .message-text{width:100%!important;max-width:none!important;box-sizing:border-box!important;text-align:center!important}
       .cr-system{background:#fff!important;padding:34px 20px 32px!important}
@@ -183,13 +202,32 @@
       if(state.hideDeletedTabs&&tab.deleted){m.classList.add('cr-hidden-tab');return;}
       if(currentTab!==channel){currentTab=channel;prevSig=null;}
       m.classList.remove('cr-narration','cr-system','cr-continuation');
-      if(m.classList.contains('system')){if(state.systemNarration){m.classList.add('cr-system');const sig='system';if(state.joinSameExpression&&sig===prevSig)m.classList.add('cr-continuation');prevSig=sig;}return;}
+      m.classList.add('cr-channel-bg');
+      m.style.setProperty('--cr-channel-bg', tab.color);
+      m.style.backgroundColor=tab.color;
+      if(m.classList.contains('system')){
+        if(state.systemNarration){
+          m.classList.add('cr-system');
+          const sig='system';
+          if(state.joinSameExpression&&sig===prevSig)m.classList.add('cr-continuation');
+          prevSig=sig;
+        }
+        return;
+      }
       const sp=m.querySelector('.speaker');if(!sp)return;const c=state.chars.get(sp.textContent.trim());if(!c)return;
       sp.textContent=c.name;sp.style.setProperty('--speaker-color',c.color||'#eee');
       const av=m.querySelector('.avatar');
       if(c.image&&av)av.style.backgroundImage=`url("${c.image}")`;
-      if(c.narration){m.classList.add('cr-narration');const sig='narration';if(state.joinSameExpression&&sig===prevSig)m.classList.add('cr-continuation');prevSig=sig;}
-      else{const sig=`${sp.textContent.trim()}|${c.image?'custom':getAvatar(m)}`;if(state.joinSameExpression&&sig===prevSig)m.classList.add('cr-continuation');prevSig=sig;}
+      if(c.narration){
+        m.classList.add('cr-narration');
+        const sig='narration';
+        if(state.joinSameExpression&&sig===prevSig)m.classList.add('cr-continuation');
+        prevSig=sig;
+      } else {
+        const sig=`${sp.textContent.trim()}|${getAvatar(m)}`;
+        if(state.joinSameExpression&&sig===prevSig)m.classList.add('cr-continuation');
+        prevSig=sig;
+      }
     });
     doc.title=(doc.title||state.fileName.replace(/\.html?$/i,''))+' - 변환';
     return doc;
