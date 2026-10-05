@@ -1,250 +1,254 @@
-(() => {
-  'use strict';
+const $=s=>document.querySelector(s);
+const $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const state={
+  source:null, fileName:"",
+  messages:[], tabs:new Map(), chars:new Map(), avatarCSS:"",
+  deleted:new Set(), added:[], selectedMessage:null,
+  channelEls:new Map(), charEls:new Map()
+};
 
-  const $ = (s, r=document) => r.querySelector(s);
-  const $$ = (s, r=document) => [...r.querySelectorAll(s)];
-  const state = {
-    doc:null, fileName:'', tabs:new Map(), chars:new Map(), activeTab:null, avatarBackgrounds:new Map(),
-    systemNarration:true, joinSameExpression:true, hideDeletedTabs:true
-  };
+function esc(s){return String(s).replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]))}
+function safeFile(s){return (s||"cocororia_edited").replace(/[\\/:*?"<>|]/g,"_").replace(/\.html?$/i,"")+".html"}
 
-  const fileInput=$('#fileInput'), fileInput2=$('#fileInput2');
-  const outputFileName=$('#outputFileName');
-  fileInput.addEventListener('change', e=>loadFile(e.target.files[0]));
-  fileInput2.addEventListener('change', e=>loadFile(e.target.files[0]));
-  $('#systemNarration').addEventListener('change', e=>{state.systemNarration=e.target.checked; render();});
-  $('#joinSameExpression').addEventListener('change', e=>{state.joinSameExpression=e.target.checked; render();});
-  $('#hideDeletedTabs').addEventListener('change', e=>{state.hideDeletedTabs=e.target.checked; render();});
-  $('#downloadBtn').addEventListener('click', downloadResult);
-  outputFileName.addEventListener('input', e=>{ e.target.value=e.target.value.replace(/[\\/:*?"<>|]/g,''); });
-  $('#resetBtn').addEventListener('click', resetState);
+function avatarRules(doc){
+  const out=[];
+  $$("style",doc).forEach(st=>{
+    const css=st.textContent||"";
+    const re=/\.avatar-image-[A-Za-z0-9_-]+\s*\{[^}]*background-image\s*:\s*url\([\s\S]*?\)[^}]*\}/g;
+    let m; while((m=re.exec(css))) out.push(m[0]);
+  });
+  return out.join("\n");
+}
+function originalAvatar(article){
+  const a=article.querySelector(".avatar");
+  return a?.className.match(/avatar-image-[A-Za-z0-9_-]+/)?.[0]||"";
+}
+function channelName(id){return state.tabs.get(id)?.name||id||"main"}
 
-  async function loadFile(file){
-    if(!file) return;
-    const text=await file.text();
-    const parser=new DOMParser();
-    const doc=parser.parseFromString(text,'text/html');
-    if(!doc.querySelector('.message-list')){alert('COCORORIA 로그 형식의 HTML을 찾지 못했습니다.');return;}
-    state.doc=doc; state.fileName=file.name; state.tabs=new Map(); state.chars=new Map(); state.avatarBackgrounds=new Map(); collectAvatarBackgrounds(doc);
-    collectData(doc);
-    $('#emptyState').hidden=true; $('#previewArea').hidden=false; $('#downloadBtn').disabled=false;
-    $('#fileName').textContent=file.name;
-    outputFileName.disabled=false;
-    outputFileName.value=file.name.replace(/\.html?$/i,'')+'_변환';
-    renderEditors(); render();
-  }
+$("#file").addEventListener("change",async e=>{
+  const f=e.target.files[0]; if(!f)return;
+  state.source=new DOMParser().parseFromString(await f.text(),"text/html");
+  state.fileName=f.name;
+  state.messages=[]; state.tabs.clear(); state.chars.clear(); state.deleted.clear(); state.added=[];
+  state.avatarCSS=avatarRules(state.source);
 
-  function collectAvatarBackgrounds(doc){
-    // COCORORIA는 아바타 이미지를 .avatar-image-N 클래스의
-    // background-image(data:image/png;base64,...)로 HTML 안에 직접 넣습니다.
-    // 원본 CSS를 그대로 읽어서 미리보기에서도 반드시 유지합니다.
-    $$('style',doc).forEach(st=>{
-      const css=st.textContent||'';
-      const re=/\.([A-Za-z0-9_-]+)\s*\{([\s\S]*?)\}/g;
-      let m;
-      while((m=re.exec(css))){
-        const className=m[1];
-        if(!className.startsWith('avatar-image-') && !className.startsWith('avatar-')) continue;
-        const block=m[2];
-        const bg=block.match(/background-image\s*:\s*(url\([\s\S]*?\))/i);
-        if(bg) state.avatarBackgrounds.set(className,bg[1]);
-      }
+  const arts=$$("main.message-list > article.message",state.source);
+  arts.forEach((a,i)=>{
+    const sys=a.classList.contains("system");
+    const sp=a.querySelector(".speaker")?.textContent.trim()||"";
+    const ch=a.dataset.channel||"main";
+    const av=originalAvatar(a);
+    const d={id:"m"+i,source:a,system:sys,speaker:sp,channel:ch,avatar:av,html:a.querySelector(".message-text")?.innerHTML||"",deleted:false};
+    a.dataset.editorId=d.id;
+    state.messages.push(d);
+    const label=a.querySelector(".channel-name")?.textContent.trim()||ch;
+    if(!state.tabs.has(ch)) state.tabs.set(ch,{id:ch,name:label,color:"#ffffff",deleted:false});
+    if(sp && !state.chars.has(sp)) state.chars.set(sp,{name:sp,color:a.querySelector(".speaker")?.style.getPropertyValue("--speaker-color")?.trim()||"#333333",image:null,narration:false,avatars:new Set()});
+    if(sp) state.chars.get(sp).avatars.add(av);
+  });
+
+  $("#empty").hidden=true; $("#chat").hidden=false; $("#download").disabled=false; $("#addMessage").disabled=false;
+  $("#filename").value=safeFile(f.name);
+  renderAll();
+});
+
+function renderAll(){
+  renderTabs(); renderChars(); renderChat(); fillAddForm();
+}
+function renderTabs(){
+  const box=$("#tabs"); box.innerHTML="";
+  for(const t of state.tabs.values()){
+    const el=document.createElement("div"); el.className="tab"+(t.deleted?" deleted":"");
+    el.innerHTML=`<div class="tab-row">
+      <input class="tab-color" type="color" value="${t.color}">
+      <div class="tab-name">${esc(t.name)}</div>
+      <button title="이 탭의 채팅 전체 삭제">전체 삭제</button>
+      <button class="restore" title="삭제한 탭 복구" ${t.deleted?"":"hidden"}>복구</button>
+    </div>`;
+    const color=el.querySelector(".tab-color");
+    color.addEventListener("input",e=>{
+      t.color=e.target.value;
+      // 색상 변경은 전체를 다시 그리지 않고 해당 탭의 DOM만 갱신
+      requestAnimationFrame(()=>state.channelEls.get(t.id)?.forEach(x=>x.style.backgroundColor=t.color));
     });
-  }
-
-  function collectData(doc){
-    const articles=$$('.message',doc);
-    const channelSet=new Set();
-    articles.forEach(m=>{
-      const channel=(m.dataset.channel||'main').trim()||'main';
-      channelSet.add(channel);
-      if(m.classList.contains('system')) return;
-      const sp=$('.speaker',m); if(!sp) return;
-      const name=sp.textContent.trim(); if(!name) return;
-      const color=getSpeakerColor(sp); const avatar=getAvatar(m);
-      if(!state.chars.has(name)) state.chars.set(name,{name,originalName:name,color,image:null,narration:false,count:0,defaultAvatar:avatar,expressions:new Map()});
-      const c=state.chars.get(name); c.count++; if(!c.defaultAvatar && avatar) c.defaultAvatar=avatar;
-      if(avatar) c.expressions.set(avatar,(c.expressions.get(avatar)||0)+1);
-      if(!c.color) c.color=color||'#eee';
+    el.querySelector("button").addEventListener("click",()=>{
+      t.deleted=true;
+      state.channelEls.get(t.id)?.forEach(x=>x.classList.add("deleted"));
+      el.classList.add("deleted"); el.querySelector(".restore").hidden=false;
     });
-    [...channelSet].forEach((name,i)=>state.tabs.set(name,{name,originalName:name,color:tabColor(i),deleted:false}));
-    state.activeTab=[...state.tabs.keys()][0]||null;
-  }
-
-  function getSpeakerColor(sp){
-    const inline=sp.getAttribute('style')||''; const m=inline.match(/--speaker-color\s*:\s*(#[0-9a-fA-F]{3,8})/); return m?m[1]:'#eee';
-  }
-  function getAvatar(m){
-    const av=$('.avatar',m); if(!av) return '';
-    const cls=av.className.match(/avatar-image-[^\s"']+/); if(cls) return cls[0];
-    const bg=(av.getAttribute('style')||'').match(/background-image\s*:\s*url\(([^)]+)\)/); return bg?bg[1]:'';
-  }
-  function tabColor(i){return ['#777777','#9b6b6b','#6b8f9b','#8d7b59','#6f8f68','#806f9b'][i%6];}
-
-  function renderEditors(){
-    const tabsEditor=$('#tabsEditor'); tabsEditor.innerHTML='';
-    for(const [id,t] of state.tabs){
-      const row=$('#tabTemplate').content.firstElementChild.cloneNode(true);
-      $('.tab-name',row).value=t.name; $('.tab-color',row).value=toHex(t.color);
-      if(t.deleted) row.classList.add('deleted');
-      $('.tab-name',row).addEventListener('input',e=>{t.name=e.target.value;render();});
-      $('.tab-color',row).addEventListener('input',e=>{t.color=e.target.value;render();});
-      $('.delete-tab',row).addEventListener('click',()=>{t.deleted=!t.deleted;renderEditors();render();});
-      $('.delete-tab',row).textContent=t.deleted?'↶':'×'; $('.delete-tab',row).title=t.deleted?'탭 되살리기':'탭 삭제';
-      tabsEditor.appendChild(row);
-    }
-    const chars=$('#charactersEditor'); chars.innerHTML='';
-    for(const c of state.chars.values()){
-      const card=$('#characterTemplate').content.firstElementChild.cloneNode(true);
-      const av=$('.character-avatar',card); setAvatarBackground(av,c.image||c.defaultAvatar);
-      $('.character-name',card).value=c.name; $('.character-count',card).textContent=`${c.count}개 메시지`;
-      $('.character-color',card).value=toHex(c.color||'#eeeeee'); $('.character-narration',card).checked=c.narration;
-      $('.character-name',card).addEventListener('input',e=>{c.name=e.target.value;render();});
-      $('.character-color',card).addEventListener('input',e=>{c.color=e.target.value;render();});
-      $('.character-narration',card).addEventListener('change',e=>{c.narration=e.target.checked;render();});
-      $('.character-image',card).addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;c.image=await readDataURL(f);renderEditors();render();});
-      $('.delete-character',card).addEventListener('click',()=>{c.name=c.originalName;c.color=getOriginalColor(c.originalName)||c.color;c.image=null;c.narration=false;renderEditors();render();});
-      chars.appendChild(card);
-    }
-  }
-  function getOriginalColor(name){return state.doc&&[...state.doc.querySelectorAll('.speaker')].find(s=>s.textContent.trim()===name)?getSpeakerColor([...state.doc.querySelectorAll('.speaker')].find(s=>s.textContent.trim()===name)):null;}
-  function readDataURL(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(f);});}
-  function toHex(v){if(/^#[0-9a-f]{6}$/i.test(v||''))return v;return '#888888';}
-
-  function render(){
-    if(!state.doc)return;
-    const preview=$('#preview'); preview.innerHTML='';
-    const root=state.doc.querySelector('.message-list');
-    const articles=$$('.message',root);
-    let prevSig=null, prevChannel=null, count=0;
-    articles.forEach(m=>{
-      const channel=(m.dataset.channel||'main').trim()||'main';
-      const tab=state.tabs.get(channel);
-      if(!tab || (state.hideDeletedTabs&&tab.deleted)) return;
-      const out=makeMessage(m); if(!out)return;
-      out.style.setProperty('--channel-bg', tab.color);
-      out.style.backgroundColor=tab.color;
-      const sig=out.dataset.signature||'';
-      if(state.joinSameExpression && prevChannel===channel && prevSig && sig && sig===prevSig){
-        out.classList.add('continuation');
-      }
-      prevSig=sig; prevChannel=channel; count++;
-      preview.appendChild(out);
+    el.querySelector(".restore").addEventListener("click",()=>{
+      t.deleted=false;
+      state.channelEls.get(t.id)?.forEach(x=>x.classList.remove("deleted"));
+      el.classList.remove("deleted"); el.querySelector(".restore").hidden=true;
     });
-    $('#stats').textContent=` · ${count}개 메시지`;
-    if(!preview.children.length) preview.innerHTML='<div class="empty-state"><h2>표시할 메시지가 없습니다.</h2></div>';
+    box.appendChild(el);
   }
+}
+function renderChars(){
+  const box=$("#chars"); box.innerHTML="";
+  for(const c of state.chars.values()){
+    const el=document.createElement("div"); el.className="char";
+    el.innerHTML=`<div class="char-row">
+      <div class="char-preview"></div><input class="char-name-edit" value="${esc(c.name)}" aria-label="캐릭터 이름">
+    </div>
+    <div class="char-tools">
+      <input class="char-color" type="color" value="${c.color}">
+      <label><input class="narr" type="checkbox" ${c.narration?"checked":""}> 나레이션</label>
+      <input class="img" type="file" accept="image/*">
+      <button class="reset" title="원본 이미지로 되돌리기">원본</button>
+    </div>`;
+    const p=el.querySelector(".char-preview");
+    const first=[...c.avatars].find(Boolean); if(first) p.classList.add(first);
+    if(c.image)p.style.backgroundImage=`url("${c.image}")`;
+    el.querySelector(".char-name-edit").addEventListener("change",e=>{
+      const old=c.name, next=e.target.value.trim()||old;
+      if(next!==old && !state.chars.has(next)){
+        state.chars.delete(old); c.name=next; state.chars.set(next,c);
+        state.messages.forEach(d=>{if(d.speaker===old)d.speaker=next});
+        state.added.forEach(d=>{if(d.speaker===old)d.speaker=next});
+        renderChars(); renderChat(); fillAddForm();
+      }else e.target.value=old;
+    });
+    el.querySelector(".char-color").addEventListener("input",e=>{
+      c.color=e.target.value;
+      requestAnimationFrame(()=>state.charEls.get(c.name)?.forEach(m=>m.querySelector(".speaker")?.style.setProperty("color",c.color)));
+    });
+    el.querySelector(".narr").addEventListener("change",e=>{
+      c.narration=e.target.checked;
+      state.charEls.get(c.name)?.forEach(m=>m.classList.toggle("narration",c.narration));
+    });
+    el.querySelector(".img").addEventListener("change",e=>{
+      const f=e.target.files[0]; if(!f)return;
+      const rd=new FileReader(); rd.onload=()=>{
+        c.image=rd.result; p.style.backgroundImage=`url("${c.image}")`;
+        state.charEls.get(c.name)?.forEach(m=>m.querySelector(".avatar")&&(m.querySelector(".avatar").style.backgroundImage=`url("${c.image}")`));
+      }; rd.readAsDataURL(f);
+    });
+    el.querySelector(".reset").addEventListener("click",()=>{
+      c.image=null; p.style.backgroundImage="";
+      state.charEls.get(c.name)?.forEach(m=>{
+        const a=m.querySelector(".avatar"); if(a)a.style.backgroundImage="";
+      });
+    });
+    box.appendChild(el);
+  }
+}
+function makeRow(d){
+  const t=state.tabs.get(d.channel), c=state.chars.get(d.speaker);
+  const row=document.createElement("article");
+  row.className="message"+(d.system?" system":"")+(d.deleted||t?.deleted?" deleted":"");
+  row.dataset.id=d.id; row.dataset.channel=d.channel; row.dataset.speaker=d.speaker;
+  row.style.backgroundColor=t?.color||"#fff";
+  row.innerHTML=`<button class="msg-delete" title="이 메시지 삭제">삭제</button>
+    <div class="msg-grid">
+      <div class="avatar ${d.avatar||""}"></div>
+      <div><div class="meta"><span class="speaker"></span><span class="time">${d.time||""}</span><span>[${esc(d.channel)}]</span></div>
+      <div class="text" contenteditable="true" spellcheck="false"></div></div>
+    </div>`;
+  if(c){
+    row.querySelector(".speaker").textContent=c.name;
+    row.querySelector(".speaker").style.color=c.color;
+    if(c.image)row.querySelector(".avatar").style.backgroundImage=`url("${c.image}")`;
+    if(c.narration)row.classList.add("narration");
+  }
+  if(d.system){
+    row.querySelector(".text").innerHTML=d.html;
+  }else row.querySelector(".text").innerHTML=d.html;
+  row.querySelector(".text").addEventListener("input",()=>d.html=row.querySelector(".text").innerHTML);
+  row.querySelector(".msg-delete").addEventListener("click",()=>{d.deleted=true;row.classList.add("deleted")});
+  return row;
+}
+function renderChat(){
+  const box=$("#chat"); box.innerHTML="";
+  state.channelEls.clear(); state.charEls.clear();
+  const frag=document.createDocumentFragment();
+  let prevSig="";
+  for(const d of state.messages){
+    const row=makeRow(d);
+    const sig=d.system?"system":`${d.speaker}|${d.channel}|${d.avatar}`;
+    if(sig===prevSig && !d.system)row.classList.add("cont");
+    prevSig=sig;
+    (state.channelEls.get(d.channel)||state.channelEls.set(d.channel,[]).get(d.channel)).push(row);
+    if(d.speaker)(state.charEls.get(d.speaker)||state.charEls.set(d.speaker,[]).get(d.speaker)).push(row);
+    frag.appendChild(row);
+  }
+  for(const d of state.added){
+    const row=makeRow(d); frag.appendChild(row);
+    (state.channelEls.get(d.channel)||state.channelEls.set(d.channel,[]).get(d.channel)).push(row);
+    if(d.speaker)(state.charEls.get(d.speaker)||state.charEls.set(d.speaker,[]).get(d.speaker)).push(row);
+  }
+  box.appendChild(frag);
+  if(state.avatarCSS){
+    let st=$("#avatarStyle"); if(!st){st=document.createElement("style");st.id="avatarStyle";document.head.appendChild(st)}
+    st.textContent=state.avatarCSS;
+  }
+}
+function fillAddForm(){
+  $("#addChannel").innerHTML=[...state.tabs.values()].map(t=>`<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("");
+  $("#addSpeaker").innerHTML=[...state.chars.keys()].map(n=>`<option>${esc(n)}</option>`).join("");
+}
+$("#addMessage").addEventListener("click",()=>$("#addDialog").showModal());
+$("#addSystem").addEventListener("change",e=>$("#addSpeaker").disabled=e.target.checked);
+$("#addForm").addEventListener("submit",e=>{
+  if(e.submitter?.value!=="default")return;
+  e.preventDefault();
+  const d={id:"a"+Date.now()+Math.random().toString(36).slice(2),channel:$("#addChannel").value,speaker:$("#addSpeaker").value,system:$("#addSystem").checked,html:esc($("#addText").value).replace(/\n/g,"<br>"),avatar:"",deleted:false};
+  if(!d.system)d.avatar=[...(state.chars.get(d.speaker)?.avatars||[])].find(Boolean)||"";
+  state.added.push(d); $("#addText").value=""; $("#addDialog").close(); renderChat();
+});
+$("#filename").addEventListener("input",e=>{e.target.value=e.target.value.replace(/[\\/:*?"<>|]/g,"_")});
 
-  function makeMessage(m){
-    if(m.classList.contains('system')){
-      if(!state.systemNarration)return cloneNormal(m);
-      const r=document.createElement('article');r.className='system-row';
-      const text=$('.message-text',m);
-      if(text){ const cloned=cloneText(text); r.appendChild(cloned); r.dataset.signature='system'; }
-      return r;
+$("#download").addEventListener("click",()=>{
+  if(!state.source)return;
+  const doc=state.source.cloneNode(true);
+  const list=doc.querySelector("main.message-list");
+  if(!list)return;
+  // 원본 메시지는 editor-id로 정확히 대응합니다.
+  state.messages.forEach(d=>{
+    const m=doc.querySelector(`main.message-list > article.message[data-editor-id="${d.id}"]`);
+    if(!m)return;
+    if(d.deleted){m.remove();return}
+    const text=m.querySelector(".message-text"); if(text)text.innerHTML=d.html;
+    const c=state.chars.get(d.speaker);
+    if(c){
+      const sp=m.querySelector(".speaker");
+      if(sp){sp.textContent=c.name;sp.style.setProperty("--speaker-color",c.color);sp.style.color=c.color}
+      const av=m.querySelector(".avatar");
+      if(av && c.image)av.style.backgroundImage=`url("${c.image}")`;
+      if(c.narration)m.classList.add("cr-narration"); else m.classList.remove("cr-narration");
     }
-    const sp=$('.speaker',m);const text=$('.message-text',m);if(!sp||!text)return null;
-    const original=sp.textContent.trim();const c=state.chars.get(original);if(!c)return null;
-    const r=document.createElement('article');r.className='message-row';
-    const avatar=document.createElement('div');avatar.className='message-avatar';setAvatarBackground(avatar,c.image||getAvatar(m));r.appendChild(avatar);
-    const main=document.createElement('div');main.className='message-main';
-    const meta=document.createElement('div');meta.className='message-meta';
-    const speaker=document.createElement('span');speaker.className='message-speaker';speaker.textContent=c.name;speaker.style.color=c.color||'#eee';meta.appendChild(speaker);
-    const time=$('.timestamp',m);if(time){const t=document.createElement('span');t.className='message-time';t.textContent=time.textContent;meta.appendChild(t);}
-    const ch=document.createElement('span');ch.className='message-channel';ch.textContent=`[${(m.dataset.channel||'main')}]`;meta.appendChild(ch);
-    main.appendChild(meta);main.appendChild(cloneText(text));r.appendChild(main);
-    const avatarSig=getAvatar(m)||'no-avatar';r.dataset.signature=c.narration?'narration':`${original}|${c.image?'custom':avatarSig}`;
-    if(c.narration){r.className='message-row narration-row';}
-    return r;
-  }
-  function cloneNormal(m){
-    const r=document.createElement('article');r.className='message-row';
-    const avatar=document.createElement('div');avatar.className='message-avatar';setAvatarBackground(avatar,getAvatar(m));r.appendChild(avatar);
-    const main=document.createElement('div');main.className='message-main';const meta=document.createElement('div');meta.className='message-meta';
-    const sp=$('.speaker',m);if(sp){const s=document.createElement('span');s.className='message-speaker';s.textContent=sp.textContent;s.style.color=getSpeakerColor(sp);meta.appendChild(s);}main.appendChild(meta);const text=$('.message-text',m);if(text)main.appendChild(cloneText(text));r.appendChild(main);r.dataset.signature=getAvatar(m)||'normal';return r;
-  }
-  function cloneText(el){const d=document.createElement('div');d.className='message-text';d.innerHTML=el.innerHTML;return d;}
-  function setAvatarBackground(el,src){
-    if(!src){el.style.backgroundImage='none';return;}
-    if(src.startsWith('data:')||src.startsWith('http')||src.startsWith('url(')){
-      el.style.backgroundImage=src.startsWith('url(')?src:`url("${src}")`;
-      return;
-    }
-    const bg=state.avatarBackgrounds.get(src);
-    if(bg){el.style.backgroundImage=bg;return;}
-    const av=state.doc&&state.doc.querySelector('.'+CSS.escape(src));
-    if(av){
-      const bg2=av.style.backgroundImage;
-      if(bg2 && bg2!=='none'){el.style.backgroundImage=bg2;return;}
-    }
-    el.style.backgroundImage='none';
-  }
-
-  function buildOutput(){
-    const doc=state.doc.cloneNode(true);
-    const root=doc.querySelector('.message-list'); if(!root)return doc;
-    const style=doc.createElement('style');style.textContent=`
-      .cr-hidden-tab{display:none!important}
-      .cr-channel-bg{background-color:var(--cr-channel-bg)!important}
-      .cr-narration,.cr-system{display:block!important;width:100%!important;box-sizing:border-box!important;background:var(--cr-channel-bg,#f5f5f5)!important;margin:0!important;padding:14px 24px!important;border:0!important;text-align:center!important}
-      .cr-narration .message-header,.cr-narration .avatar,.cr-narration .avatar-spacer,.cr-system .message-header{display:none!important}
-      .cr-narration .message-content,.cr-narration .message-text,.cr-system .message-text{width:100%!important;max-width:none!important;box-sizing:border-box!important;text-align:center!important}
-      .cr-system{background:#fff!important;padding:34px 20px 32px!important}
-      .cr-system .message-text{display:flex!important;flex-direction:column!important;align-items:center!important;font-size:16px!important}
-      .cr-system .message-text:before,.cr-system .message-text:after{content:"";display:block;width:60px;height:1px;background:#ddd}
-      .cr-system .message-text:before{margin-bottom:20px}
-      .cr-system .message-text:after{margin-top:20px}
-      .cr-continuation{padding-top:2px!important;padding-bottom:2px!important;border-bottom-color:transparent!important}
-    `;doc.head.appendChild(style);
-    const articles=[...root.querySelectorAll('.message')]; let currentTab=null,prevSig=null;
-    articles.forEach(m=>{
-      const channel=(m.dataset.channel||'main').trim()||'main';const tab=state.tabs.get(channel);if(!tab)return;
-      if(state.hideDeletedTabs&&tab.deleted){m.classList.add('cr-hidden-tab');return;}
-      if(currentTab!==channel){currentTab=channel;prevSig=null;}
-      m.classList.remove('cr-narration','cr-system','cr-continuation');
-      m.classList.add('cr-channel-bg');
-      m.style.setProperty('--cr-channel-bg', tab.color);
+    const tab=state.tabs.get(d.channel);
+    if(tab){
+      m.dataset.channel=d.channel;
       m.style.backgroundColor=tab.color;
-      if(m.classList.contains('system')){
-        if(state.systemNarration){
-          m.classList.add('cr-system');
-          const sig='system';
-          if(state.joinSameExpression&&sig===prevSig)m.classList.add('cr-continuation');
-          prevSig=sig;
-        }
-        return;
-      }
-      const sp=m.querySelector('.speaker');if(!sp)return;const c=state.chars.get(sp.textContent.trim());if(!c)return;
-      sp.textContent=c.name;sp.style.setProperty('--speaker-color',c.color||'#eee');
-      const av=m.querySelector('.avatar');
-      if(c.image&&av)av.style.backgroundImage=`url("${c.image}")`;
-      if(c.narration){
-        m.classList.add('cr-narration');
-        const sig='narration';
-        if(state.joinSameExpression&&sig===prevSig)m.classList.add('cr-continuation');
-        prevSig=sig;
-      } else {
-        const sig=`${sp.textContent.trim()}|${getAvatar(m)}`;
-        if(state.joinSameExpression&&sig===prevSig)m.classList.add('cr-continuation');
-        prevSig=sig;
-      }
-    });
-    doc.title=(doc.title||state.fileName.replace(/\.html?$/i,''))+' - 변환';
-    return doc;
+      if(tab.deleted)m.remove();
+    }
+  });
+  // 추가 메시지는 원본 형식으로 최소한의 구조를 생성
+  for(const d of state.added){
+    if(state.tabs.get(d.channel)?.deleted)continue;
+    const c=state.chars.get(d.speaker);
+    const m=doc.createElement("article"); m.className="message"+(d.system?" system":""); m.dataset.channel=d.channel;
+    const avatar=d.avatar?`<span class="avatar ${d.avatar}" aria-hidden="true"></span>`:"<span class=\"avatar avatar-spacer\" aria-hidden=\"true\"></span>";
+    const meta=d.system?`<div class="message-header"><span class="channel-name">[${esc(d.channel)}]</span></div>`:`<div class="message-header"><span class="speaker" style="--speaker-color:${c?.color||"#333"}">${esc(c?.name||d.speaker)}</span><span class="timestamp"></span><span class="channel-name">[${esc(d.channel)}]</span></div>`;
+    m.innerHTML=`${avatar}<div class="message-content">${meta}<div class="message-text">${d.html}</div></div>`;
+    if(c?.image){const av=m.querySelector(".avatar");if(av)av.style.backgroundImage=`url("${c.image}")`}
+    if(c?.narration)m.classList.add("cr-narration");
+    m.style.backgroundColor=state.tabs.get(d.channel)?.color||"#fff";
+    list.appendChild(m);
   }
-  function downloadResult(){
-    const doc=buildOutput();
-    const html='<!doctype html>\n'+doc.documentElement.outerHTML;
-    const blob=new Blob([html],{type:'text/html;charset=utf-8'});
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(blob);
-    let name=(outputFileName.value||state.fileName.replace(/\.html?$/i,'')+'_변환').trim();
-    name=name.replace(/[\\/:*?"<>|]/g,'');
-    if(!name) name='변환된_로그';
-    if(!/\.html?$/i.test(name)) name+='.html';
-    a.download=name;
-    a.click();
-    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
-  }
-  function resetState(){if(!state.doc)return;collectData(state.doc);renderEditors();render();}
-})();
+  const st=doc.createElement("style"); st.textContent=`
+body,.message,.message-text{font-family:Pretendard,"Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif!important}
+.cr-narration{display:block!important;width:100%!important;box-sizing:border-box!important;text-align:center!important;padding:12px 20px!important;background:var(--cr-tab-bg,#eee)!important}
+.cr-narration .message-header,.cr-narration .avatar,.cr-narration .avatar-spacer{display:none!important}
+.cr-narration .message-content,.cr-narration .message-text{width:100%!important;max-width:none!important;text-align:center!important}
+.message.system{display:block!important;width:100%!important;box-sizing:border-box!important;text-align:center!important;background:inherit!important}
+.message.system .message-header{display:none!important}
+.message.system .message-text:before,.message.system .message-text:after{content:"";display:block;width:60px;height:1px;background:#ddd;margin-left:auto;margin-right:auto}
+.message.system .message-text:before{margin-bottom:18px}.message.system .message-text:after{margin-top:18px}
+`;
+  doc.head.appendChild(st);
+  const blob=new Blob(["<!doctype html>\n"+doc.documentElement.outerHTML],{type:"text/html;charset=utf-8"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=safeFile($("#filename").value);a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+});
