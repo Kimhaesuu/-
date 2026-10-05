@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>COCORORIA 로그 변환기</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>COCORORIA 로그 변환기</h1>
+      <p>HTML 로그를 불러와 탭·캐릭터·나레이션을 편집하고 다시 HTML로 저장합니다.</p>
+    </div>
+    <div class="top-actions">
+      <label class="button primary">HTML 불러오기<input id="fileInput" type="file" accept=".html,.htm,text/html" hidden></label>
+      <label class="filename-box">파일 이름
+        <input id="outputFileName" type="text" placeholder="변환된_로그" disabled>
+      </label>
+      <button id="downloadBtn" class="button" disabled>변환 HTML 저장</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <section class="panel">
+        <h2>탭</h2>
+        <div id="tabsEditor" class="editor-list"></div>
+      </section>
+      <section class="panel">
+        <h2>캐릭터</h2>
+        <div id="charactersEditor" class="editor-list"></div>
+      </section>
+      <section class="panel">
+        <h2>표시</h2>
+        <label class="check"><input id="systemNarration" type="checkbox" checked> /system을 나레이션으로</label>
+        <label class="check"><input id="joinSameExpression" type="checkbox" checked> 같은 표정은 구분선 없이 연결</label>
+        <label class="check"><input id="hideDeletedTabs" type="checkbox" checked> 삭제한 탭은 출력에서 제외</label>
+      </section>
+      <section class="panel help">
+        <h2>사용법</h2>
+        <ol>
+          <li>COCORORIA에서 HTML을 내보냅니다.</li>
+          <li>이 페이지에서 HTML을 불러옵니다.</li>
+          <li>탭과 캐릭터 설정을 바꿉니다.</li>
+          <li>오른쪽 미리보기를 확인합니다.</li>
+          <li><b>변환 HTML 저장</b>으로 결과를 저장합니다.</li>
+        </ol>
+      </section>
+    </aside>
+
+    <section class="workspace">
+      <div id="emptyState" class="empty-state">
+        <div class="empty-icon">✦</div>
+        <h2>COCORORIA HTML을 불러오세요</h2>
+        <p>변환 결과는 서버에 업로드하지 않고 이 브라우저 안에서만 처리됩니다.</p>
+        <label class="button primary">파일 선택<input id="fileInput2" type="file" accept=".html,.htm,text/html" hidden></label>
+      </div>
+
+      <div id="previewArea" class="preview-area" hidden>
+        <div class="preview-toolbar">
+          <div>
+            <strong id="fileName">파일 없음</strong>
+            <span id="stats"></span>
+          </div>
+          <button id="resetBtn" class="text-button">처음 상태로</button>
+        </div>
+        <nav id="previewTabs" class="preview-tabs"></nav>
+        <div id="preview" class="preview"></div>
+      </div>
+    </section>
+  </main>
+
+  <template id="tabTemplate">
+    <div class="editor-row tab-row">
+      <span class="drag-dot">⋮⋮</span>
+      <input class="tab-name" type="text">
+      <input class="tab-color" type="color">
+      <button class="icon-button delete-tab" title="탭 삭제">×</button>
+    </div>
+  </template>
+
+  <template id="characterTemplate">
+    <div class="character-card">
+      <div class="character-head">
+        <div class="character-avatar"></div>
+        <div class="character-info">
+          <input class="character-name" type="text">
+          <div class="character-count"></div>
+        </div>
+        <button class="icon-button delete-character" title="캐릭터 설정 초기화">↺</button>
+      </div>
+      <div class="character-controls">
+        <label>글자색 <input class="character-color" type="color"></label>
+        <label class="narration-label"><input class="character-narration" type="checkbox"> 나레이션</label>
+      </div>
+      <label class="image-picker">이미지 변경<input class="character-image" type="file" accept="image/*"></label>
+    </div>
+  </template>
+
+  <script src="script.js"></script>
+</body>
+</html>
